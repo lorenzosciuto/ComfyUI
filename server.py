@@ -440,6 +440,242 @@ class PromptServer():
             """
             return web.Response(text=html_content, content_type='text/html')
 
+        @routes.get("/output")
+        async def get_output_page(request):
+            html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Output Files</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #1a1a1a; color: #ffffff; }
+        .card { background-color: #2d2d2d; border: 1px solid #404040; }
+        .btn-primary { background-color: #007bff; border-color: #007bff; }
+        .btn-primary:hover { background-color: #0056b3; border-color: #0056b3; }
+        .btn-danger { background-color: #dc3545; border-color: #dc3545; }
+        .btn-success { background-color: #28a745; border-color: #28a745; }
+        .file-item { background-color: #333; padding: 15px; margin: 8px 0; border-radius: 8px; border-left: 4px solid #007bff; }
+        .file-preview { max-width: 200px; max-height: 150px; object-fit: cover; border-radius: 5px; }
+        .file-info { font-size: 0.9em; color: #aaa; margin-top: 5px; }
+        .file-actions { margin-top: 10px; }
+        .selected { border-left-color: #28a745 !important; background-color: #2a4a2a; }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row">
+            <div class="col-12">
+                <h2 class="text-center mb-4">Output Files</h2>
+                <div class="mb-3">
+                    <button class="btn btn-primary" onclick="loadFiles()">Refresh</button>
+                    <button class="btn btn-success" onclick="downloadSelected()">Download Selected</button>
+                    <button class="btn btn-danger" onclick="deleteSelected()">Delete Selected</button>
+                    <span class="ms-3 text-muted" id="fileCount">0 files</span>
+                </div>
+                <div id="fileList"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let selectedFiles = new Set();
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function formatDate(dateString) {
+            return new Date(dateString).toLocaleString();
+        }
+        
+        function toggleFileSelection(filename) {
+            const item = document.getElementById(`file-${filename}`);
+            if (selectedFiles.has(filename)) {
+                selectedFiles.delete(filename);
+                item.classList.remove('selected');
+            } else {
+                selectedFiles.add(filename);
+                item.classList.add('selected');
+            }
+        }
+        
+        function previewFile(filename, type) {
+            if (type.startsWith('image/')) {
+                return `<img src="/view?filename=${encodeURIComponent(filename)}" class="file-preview" alt="${filename}">`;
+            } else if (type.startsWith('video/')) {
+                return `<video class="file-preview" controls><source src="/view?filename=${encodeURIComponent(filename)}" type="${type}"></video>`;
+            }
+            return '<div class="file-preview d-flex align-items-center justify-content-center bg-secondary">📄</div>';
+        }
+        
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/output/files');
+                const files = await response.json();
+                
+                const fileList = document.getElementById('fileList');
+                const fileCount = document.getElementById('fileCount');
+                
+                fileCount.textContent = `${files.length} files`;
+                
+                if (files.length === 0) {
+                    fileList.innerHTML = '<div class="alert alert-info">No output files found</div>';
+                    return;
+                }
+                
+                fileList.innerHTML = files.map(file => `
+                    <div class="file-item" id="file-${file.name}" onclick="toggleFileSelection('${file.name}')">
+                        <div class="row">
+                            <div class="col-md-3">
+                                ${previewFile(file.name, file.type)}
+                            </div>
+                            <div class="col-md-9">
+                                <h6>${file.name}</h6>
+                                <div class="file-info">
+                                    Size: ${formatFileSize(file.size)} | 
+                                    Modified: ${formatDate(file.modified)} | 
+                                    Type: ${file.type}
+                                </div>
+                                <div class="file-actions">
+                                    <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); downloadFile('${file.name}')">Download</button>
+                                    <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); deleteFile('${file.name}')">Delete</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                document.getElementById('fileList').innerHTML = `<div class="alert alert-danger">Error loading files: ${error.message}</div>`;
+            }
+        }
+        
+        function downloadFile(filename) {
+            window.open(`/view?filename=${encodeURIComponent(filename)}`, '_blank');
+        }
+        
+        async function deleteFile(filename) {
+            if (!confirm(`Delete ${filename}?`)) return;
+            
+            try {
+                const response = await fetch('/api/output/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: [filename] })
+                });
+                
+                if (response.ok) {
+                    loadFiles();
+                } else {
+                    alert('Failed to delete file');
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+        
+        async function downloadSelected() {
+            if (selectedFiles.size === 0) {
+                alert('No files selected');
+                return;
+            }
+            
+            for (const filename of selectedFiles) {
+                downloadFile(filename);
+            }
+        }
+        
+        async function deleteSelected() {
+            if (selectedFiles.size === 0) {
+                alert('No files selected');
+                return;
+            }
+            
+            if (!confirm(`Delete ${selectedFiles.size} selected files?`)) return;
+            
+            try {
+                const response = await fetch('/api/output/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: Array.from(selectedFiles) })
+                });
+                
+                if (response.ok) {
+                    selectedFiles.clear();
+                    loadFiles();
+                } else {
+                    alert('Failed to delete files');
+                }
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+        
+        // Load files on page load
+        loadFiles();
+    </script>
+</body>
+</html>
+            """
+            return web.Response(text=html_content, content_type='text/html')
+
+        @routes.get("/api/output/files")
+        async def get_output_files(request):
+            try:
+                output_dir = folder_paths.get_output_directory()
+                files = []
+                
+                for filename in os.listdir(output_dir):
+                    filepath = os.path.join(output_dir, filename)
+                    if os.path.isfile(filepath):
+                        stat = os.stat(filepath)
+                        mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+                        
+                        files.append({
+                            'name': filename,
+                            'size': stat.st_size,
+                            'modified': stat.st_mtime,
+                            'type': mime_type
+                        })
+                
+                # Sort by modification time (newest first)
+                files.sort(key=lambda x: x['modified'], reverse=True)
+                return web.json_response(files)
+                
+            except Exception as e:
+                logging.error(f"Error listing output files: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
+        @routes.post("/api/output/delete")
+        async def delete_output_files(request):
+            try:
+                data = await request.json()
+                files_to_delete = data.get('files', [])
+                output_dir = folder_paths.get_output_directory()
+                
+                deleted_count = 0
+                for filename in files_to_delete:
+                    # Security check
+                    if '..' in filename or filename.startswith('/'):
+                        continue
+                        
+                    filepath = os.path.join(output_dir, filename)
+                    if os.path.isfile(filepath):
+                        os.remove(filepath)
+                        deleted_count += 1
+                        logging.info(f"Deleted output file: {filepath}")
+                
+                return web.json_response({'deleted': deleted_count})
+                
+            except Exception as e:
+                logging.error(f"Error deleting output files: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
         @routes.get("/embeddings")
         def get_embeddings(request):
             embeddings = folder_paths.get_filename_list("embeddings")
@@ -694,13 +930,14 @@ class PromptServer():
                         if content_type in {'text/html', 'text/html-sandboxed', 'application/xhtml+xml', 'text/javascript', 'text/css'}:
                             content_type = 'application/octet-stream'  # Forces download
 
-                        return web.FileResponse(
-                            file,
-                            headers={
-                                "Content-Disposition": f"filename=\"{filename}\"",
-                                "Content-Type": content_type
-                            }
-                        )
+                        # Add download header if requested
+                        headers = {"Content-Type": content_type}
+                        if 'download' in request.rel_url.query:
+                            headers["Content-Disposition"] = f"attachment; filename=\"{filename}\""
+                        else:
+                            headers["Content-Disposition"] = f"filename=\"{filename}\""
+
+                        return web.FileResponse(file, headers=headers)
 
             return web.Response(status=404)
 
