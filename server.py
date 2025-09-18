@@ -21,6 +21,7 @@ from io import BytesIO
 import aiohttp
 from aiohttp import web
 import logging
+import requests
 
 import mimetypes
 from comfy.cli_args import args
@@ -252,6 +253,133 @@ class PromptServer():
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
             return response
+
+        @routes.get("/download")
+        async def get_download_page(request):
+            html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Download</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #1a1a1a; color: #ffffff; }
+        .card { background-color: #2d2d2d; border: 1px solid #404040; }
+        .form-control { background-color: #404040; border: 1px solid #555; color: #ffffff; }
+        .form-control:focus { background-color: #404040; border-color: #007bff; color: #ffffff; box-shadow: 0 0 0 0.2rem rgba(0,123,255,.25); }
+        .btn-primary { background-color: #007bff; border-color: #007bff; }
+        .btn-primary:hover { background-color: #0056b3; border-color: #0056b3; }
+        .download-item { background-color: #333; padding: 10px; margin: 5px 0; border-radius: 5px; }
+        .progress { background-color: #555; }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-10">
+                <h2 class="text-center mb-4">Model Download</h2>
+                <form id="downloadForm">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>Diffusion Models</h5>
+                                </div>
+                                <div class="card-body">
+                                    <textarea class="form-control" id="diffusion_models" rows="3" placeholder="Separate URLs with semicolons (;):\nhttps://example.com/model1.safetensors;https://example.com/model2.safetensors"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>LoRA</h5>
+                                </div>
+                                <div class="card-body">
+                                    <textarea class="form-control" id="lora" rows="3" placeholder="Separate URLs with semicolons (;):\nhttps://example.com/lora1.safetensors;https://example.com/lora2.safetensors"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>Text Encoders</h5>
+                                </div>
+                                <div class="card-body">
+                                    <textarea class="form-control" id="text_encoders" rows="3" placeholder="Separate URLs with semicolons (;):\nhttps://example.com/encoder1.safetensors;https://example.com/encoder2.safetensors"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5>VAE</h5>
+                                </div>
+                                <div class="card-body">
+                                    <textarea class="form-control" id="vae" rows="3" placeholder="Separate URLs with semicolons (;):\nhttps://example.com/vae1.safetensors;https://example.com/vae2.safetensors"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="text-center mt-4">
+                        <button type="submit" class="btn btn-primary btn-lg">Download Models</button>
+                    </div>
+                </form>
+                <div id="status" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        document.getElementById('downloadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const statusDiv = document.getElementById('status');
+            const button = document.querySelector('button[type="submit"]');
+            
+            button.disabled = true;
+            button.textContent = 'Downloading...';
+            statusDiv.innerHTML = '<div class="alert alert-info">Starting downloads...</div>';
+            
+            const data = {
+                diffusion_models: document.getElementById('diffusion_models').value.split(';').filter(url => url.trim()),
+                lora: document.getElementById('lora').value.split(';').filter(url => url.trim()),
+                text_encoders: document.getElementById('text_encoders').value.split(';').filter(url => url.trim()),
+                vae: document.getElementById('vae').value.split(';').filter(url => url.trim())
+            };
+            
+            console.log('Sending download request:', data);
+            
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                console.log('Download response:', result);
+                
+                if (response.ok) {
+                    statusDiv.innerHTML = `<div class="alert alert-success">${result.message}</div>`;
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                console.error('Download error:', error);
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Download Models';
+            }
+        });
+    </script>
+</body>
+</html>
+            """
+            return web.Response(text=html_content, content_type='text/html')
 
         @routes.get("/embeddings")
         def get_embeddings(request):
@@ -778,9 +906,85 @@ class PromptServer():
 
             return web.Response(status=200)
 
+        @routes.post("/api/download")
+        async def download_models(request):
+            try:
+                data = await request.json()
+                logging.info(f"Download request received: {data}")
+                
+                folder_mapping = {
+                    'diffusion_models': 'checkpoints',
+                    'lora': 'loras', 
+                    'text_encoders': 'text_encoders',
+                    'vae': 'vae'
+                }
+                
+                models_base_path = os.path.join(os.path.dirname(__file__), 'models')
+                
+                download_tasks = []
+                
+                # Handle all model types
+                for model_type, urls in data.items():
+                    if urls and model_type in folder_mapping:
+                        folder_name = folder_mapping[model_type]
+                        target_dir = os.path.join(models_base_path, folder_name)
+                        os.makedirs(target_dir, exist_ok=True)
+                        
+                        for url in urls:
+                            if url.strip():
+                                filename = os.path.basename(url.split('?')[0])
+                                target_path = os.path.join(target_dir, filename)
+                                logging.info(f"Adding download task: {filename} from {url}")
+                                download_tasks.append(self._download_file(url, target_path, filename))
+                
+                if download_tasks:
+                    logging.info(f"Starting {len(download_tasks)} downloads")
+                    await asyncio.gather(*download_tasks, return_exceptions=True)
+                    return web.json_response({'status': 'completed', 'message': 'All downloads completed'})
+                else:
+                    return web.json_response({'status': 'no_files', 'message': 'No files to download'})
+                
+            except Exception as e:
+                logging.error(f"Download error: {e}")
+                return web.json_response({'error': str(e)}, status=500)
+
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
         self.client_session = aiohttp.ClientSession(timeout=timeout)
+
+    async def _download_file(self, url, target_path, filename):
+        """Download a file from URL to the target path."""
+        try:
+            # Skip if file already exists
+            if os.path.exists(target_path):
+                logging.info(f"File already exists: {filename}")
+                return
+                
+            logging.info(f"Starting download: {filename} from {url}")
+            
+            async with self.client_session.get(url) as response:
+                if response.status == 200:
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    
+                    with open(target_path, 'wb') as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0 and downloaded % (1024*1024) == 0:  # Log every MB
+                                progress = int((downloaded / total_size) * 100)
+                                logging.info(f"Downloading {filename}: {progress}%")
+                    
+                    logging.info(f"Successfully downloaded: {filename}")
+                else:
+                    raise Exception(f"HTTP {response.status}")
+                    
+        except Exception as e:
+            logging.error(f"Failed to download {filename}: {e}")
+            # Clean up partial file
+            if os.path.exists(target_path):
+                os.remove(target_path)
+            raise
 
     def add_routes(self):
         self.user_manager.add_routes(self.routes)
