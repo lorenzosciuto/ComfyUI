@@ -271,8 +271,10 @@ class PromptServer():
         .form-control:focus { background-color: #404040; border-color: #007bff; color: #ffffff; box-shadow: 0 0 0 0.2rem rgba(0,123,255,.25); }
         .btn-primary { background-color: #007bff; border-color: #007bff; }
         .btn-primary:hover { background-color: #0056b3; border-color: #0056b3; }
-        .download-item { background-color: #333; padding: 10px; margin: 5px 0; border-radius: 5px; }
-        .progress { background-color: #555; }
+        .download-item { background-color: #333; padding: 15px; margin: 8px 0; border-radius: 8px; border-left: 4px solid #007bff; }
+        .progress { background-color: #555; height: 8px; }
+        .file-info { font-size: 0.9em; color: #aaa; margin-top: 5px; }
+        .status-icon { font-size: 1.2em; margin-right: 8px; }
     </style>
 </head>
 <body>
@@ -334,14 +336,69 @@ class PromptServer():
         </div>
     </div>
     <script>
+        let downloadInterval;
+        
+        function showProgress(files) {
+            const statusDiv = document.getElementById('status');
+            let html = '<div class="alert alert-info mb-3">Processing files...</div>';
+            
+            let completed = 0, exists = 0, errors = 0, downloading = 0;
+            
+            files.forEach(file => {
+                const statusClass = file.status === 'completed' ? 'success' : 
+                                  file.status === 'exists' ? 'warning' : 
+                                  file.status === 'error' ? 'danger' : 'info';
+                const statusIcon = file.status === 'completed' ? '✓' : 
+                                 file.status === 'exists' ? '⚠' : 
+                                 file.status === 'error' ? '✗' : '⏳';
+                const statusText = file.status === 'completed' ? 'Downloaded successfully' : 
+                                 file.status === 'exists' ? 'Already exists (skipped)' : 
+                                 file.status === 'error' ? 'Download failed' : 'Downloading...';
+                
+                // Count statuses
+                if (file.status === 'completed') completed++;
+                else if (file.status === 'exists') exists++;
+                else if (file.status === 'error') errors++;
+                else downloading++;
+                
+                html += `<div class="download-item">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <span class="status-icon text-${statusClass}">${statusIcon}</span>
+                            <strong>${file.filename}</strong>
+                        </div>
+                        <span class="text-${statusClass}">${statusText}</span>
+                    </div>
+                    ${file.status === 'downloading' ? 
+                        '<div class="progress mt-2"><div class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 100%"></div></div>' + 
+                        '<div class="file-info mt-1">Please wait, downloading in progress...</div>' : ''}
+                    ${file.status === 'exists' ? '<div class="file-info">File already exists in models folder</div>' : ''}
+                </div>`;
+            });
+            
+            // Add summary
+            const total = files.length;
+            if (total > 0) {
+                html = `<div class="alert alert-secondary mb-3">
+                    <strong>Summary:</strong> ${total} files total - 
+                    <span class="text-success">${completed} downloaded</span>, 
+                    <span class="text-warning">${exists} existed</span>, 
+                    <span class="text-danger">${errors} failed</span>
+                    ${downloading > 0 ? `, <span class="text-info">${downloading} downloading</span>` : ''}
+                </div>` + html;
+            }
+            
+            statusDiv.innerHTML = html;
+        }
+        
         document.getElementById('downloadForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const statusDiv = document.getElementById('status');
             const button = document.querySelector('button[type="submit"]');
             
             button.disabled = true;
-            button.textContent = 'Downloading...';
-            statusDiv.innerHTML = '<div class="alert alert-info">Starting downloads...</div>';
+            button.textContent = 'Processing...';
+            statusDiv.innerHTML = '<div class="alert alert-info">Checking files and starting downloads...</div>';
             
             const data = {
                 diffusion_models: document.getElementById('diffusion_models').value.split(';').filter(url => url.trim()),
@@ -350,8 +407,6 @@ class PromptServer():
                 vae: document.getElementById('vae').value.split(';').filter(url => url.trim())
             };
             
-            console.log('Sending download request:', data);
-            
             try {
                 const response = await fetch('/api/download', {
                     method: 'POST',
@@ -359,13 +414,17 @@ class PromptServer():
                     body: JSON.stringify(data)
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
                 const result = await response.json();
                 console.log('Download response:', result);
                 
-                if (response.ok) {
-                    statusDiv.innerHTML = `<div class="alert alert-success">${result.message}</div>`;
+                if (result.files && result.files.length > 0) {
+                    showProgress(result.files);
                 } else {
-                    statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${result.error}</div>`;
+                    statusDiv.innerHTML = `<div class="alert alert-warning">${result.message || 'No files to process'}</div>`;
                 }
             } catch (error) {
                 console.error('Download error:', error);
@@ -913,17 +972,25 @@ class PromptServer():
                 logging.info(f"Download request received: {data}")
                 
                 folder_mapping = {
-                    'diffusion_models': 'checkpoints',
+                    'diffusion_models': 'diffusion_models',
                     'lora': 'loras', 
                     'text_encoders': 'text_encoders',
                     'vae': 'vae'
                 }
                 
                 models_base_path = os.path.join(os.path.dirname(__file__), 'models')
-                
+                file_status = []
                 download_tasks = []
                 
-                # Handle all model types
+                # Check all files first
+                total_files = 0
+                for model_type, urls in data.items():
+                    if urls and model_type in folder_mapping:
+                        total_files += len([url for url in urls if url.strip()])
+                        
+                logging.info(f"[DOWNLOAD] Processing {total_files} files...")
+                logging.info(f"[DOWNLOAD] Folder mappings: {folder_mapping}")
+                
                 for model_type, urls in data.items():
                     if urls and model_type in folder_mapping:
                         folder_name = folder_mapping[model_type]
@@ -934,16 +1001,47 @@ class PromptServer():
                             if url.strip():
                                 filename = os.path.basename(url.split('?')[0])
                                 target_path = os.path.join(target_dir, filename)
-                                logging.info(f"Adding download task: {filename} from {url}")
-                                download_tasks.append(self._download_file(url, target_path, filename))
+                                
+                                if os.path.exists(target_path):
+                                    file_status.append({'filename': filename, 'status': 'exists'})
+                                    logging.info(f"[DOWNLOAD] ⚠ Already exists: {filename} -> {target_path}")
+                                else:
+                                    file_status.append({'filename': filename, 'status': 'downloading'})
+                                    download_tasks.append(self._download_file(url, target_path, filename))
                 
+                # Start downloads for missing files
                 if download_tasks:
-                    logging.info(f"Starting {len(download_tasks)} downloads")
-                    await asyncio.gather(*download_tasks, return_exceptions=True)
-                    return web.json_response({'status': 'completed', 'message': 'All downloads completed'})
-                else:
-                    return web.json_response({'status': 'no_files', 'message': 'No files to download'})
+                    logging.info(f"[DOWNLOAD] Starting {len(download_tasks)} parallel downloads...")
+                    results = await asyncio.gather(*download_tasks, return_exceptions=True)
+                    
+                    # Update status based on results
+                    download_idx = 0
+                    completed_count = 0
+                    failed_count = 0
+                    
+                    for i, status in enumerate(file_status):
+                        if status['status'] == 'downloading':
+                            if isinstance(results[download_idx], Exception):
+                                file_status[i]['status'] = 'error'
+                                failed_count += 1
+                            else:
+                                file_status[i]['status'] = 'completed'
+                                completed_count += 1
+                            download_idx += 1
+                    
+                    existing_count = len([f for f in file_status if f['status'] == 'exists'])
+                    logging.info(f"[DOWNLOAD] Summary: {completed_count} downloaded, {existing_count} existed, {failed_count} failed")
                 
+                if not file_status:
+                    logging.info("[DOWNLOAD] No files to process")
+                    return web.json_response({'status': 'no_files', 'files': [], 'message': 'No files to process'})
+                    
+                logging.info(f"[DOWNLOAD] Process completed for {len(file_status)} files")
+                return web.json_response({'status': 'completed', 'files': file_status})
+                
+            except json.JSONDecodeError:
+                logging.error("Invalid JSON in request")
+                return web.json_response({'error': 'Invalid JSON'}, status=400)
             except Exception as e:
                 logging.error(f"Download error: {e}")
                 return web.json_response({'error': str(e)}, status=500)
@@ -955,36 +1053,43 @@ class PromptServer():
     async def _download_file(self, url, target_path, filename):
         """Download a file from URL to the target path."""
         try:
-            # Skip if file already exists
-            if os.path.exists(target_path):
-                logging.info(f"File already exists: {filename}")
-                return
-                
-            logging.info(f"Starting download: {filename} from {url}")
+            logging.info(f"[DOWNLOAD] Starting: {filename} -> {target_path}")
             
             async with self.client_session.get(url) as response:
                 if response.status == 200:
                     total_size = int(response.headers.get('content-length', 0))
                     downloaded = 0
+                    last_progress = 0
+                    
+                    # Format file size
+                    size_mb = total_size / (1024 * 1024) if total_size > 0 else 0
+                    logging.info(f"[DOWNLOAD] {filename}: {size_mb:.1f} MB -> {target_path}")
                     
                     with open(target_path, 'wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
                             f.write(chunk)
                             downloaded += len(chunk)
-                            if total_size > 0 and downloaded % (1024*1024) == 0:  # Log every MB
+                            
+                            if total_size > 0:
                                 progress = int((downloaded / total_size) * 100)
-                                logging.info(f"Downloading {filename}: {progress}%")
+                                # Log every 10% progress
+                                if progress >= last_progress + 10:
+                                    downloaded_mb = downloaded / (1024 * 1024)
+                                    logging.info(f"[DOWNLOAD] {filename}: {progress}% ({downloaded_mb:.1f}/{size_mb:.1f} MB)")
+                                    last_progress = progress
                     
-                    logging.info(f"Successfully downloaded: {filename}")
+                    final_size = os.path.getsize(target_path) / (1024 * 1024)
+                    logging.info(f"[DOWNLOAD] ✓ Completed: {filename} ({final_size:.1f} MB) -> {target_path}")
+                    return True
                 else:
                     raise Exception(f"HTTP {response.status}")
                     
         except Exception as e:
-            logging.error(f"Failed to download {filename}: {e}")
+            logging.error(f"[DOWNLOAD] ✗ Failed: {filename} -> {target_path} - {e}")
             # Clean up partial file
             if os.path.exists(target_path):
                 os.remove(target_path)
-            raise
+            raise e
 
     def add_routes(self):
         self.user_manager.add_routes(self.routes)
