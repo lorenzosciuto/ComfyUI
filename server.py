@@ -507,11 +507,15 @@ class PromptServer():
         
         function previewFile(filename, type) {
             if (type.startsWith('image/')) {
-                return `<img src="/view?filename=${encodeURIComponent(filename)}" class="file-preview" alt="${filename}">`;
+                return `<img src="/view?filename=${encodeURIComponent(filename)}" class="file-preview" alt="${filename}" ondblclick="event.stopPropagation(); openInNewTab('${filename}')">`;
             } else if (type.startsWith('video/')) {
-                return `<video class="file-preview" controls><source src="/view?filename=${encodeURIComponent(filename)}" type="${type}"></video>`;
+                return `<video class="file-preview" controls ondblclick="event.stopPropagation(); openInNewTab('${filename}')"><source src="/view?filename=${encodeURIComponent(filename)}" type="${type}"></video>`;
             }
             return '<div class="file-preview d-flex align-items-center justify-content-center bg-secondary">📄</div>';
+        }
+        
+        function openInNewTab(filename) {
+            window.open(`/view?filename=${encodeURIComponent(filename)}`, '_blank');
         }
         
         async function loadFiles() {
@@ -556,7 +560,12 @@ class PromptServer():
         }
         
         function downloadFile(filename) {
-            window.open(`/view?filename=${encodeURIComponent(filename)}`, '_blank');
+            const link = document.createElement('a');
+            link.href = `/view?filename=${encodeURIComponent(filename)}&download=1`;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
         
         async function deleteFile(filename) {
@@ -586,7 +595,7 @@ class PromptServer():
             }
             
             for (const filename of selectedFiles) {
-                downloadFile(filename);
+                setTimeout(() => downloadFile(filename), 100);
             }
         }
         
